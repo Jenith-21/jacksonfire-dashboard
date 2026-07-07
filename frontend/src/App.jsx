@@ -8,6 +8,7 @@ import AlertsButton from './components/AlertsButton'
 import { DashboardView } from './components/DashboardView'
 import { applyDashboardFilters } from './utils/rebuildView'
 import { buildDashboardAlerts } from './utils/buildDashboardAlerts'
+import { withLiveExpiryRecords } from './utils/quoteExpiry'
 import './App.css'
 
 function App() {
@@ -26,19 +27,20 @@ function App() {
   const [darkMode, setDarkMode] = useState(
     () => localStorage.getItem('theme') === 'dark'
   )
+  const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light')
     localStorage.setItem('theme', darkMode ? 'dark' : 'light')
   }, [darkMode])
 
-  const loadData = useCallback(async () => {
-    setError(null)
+  const loadData = useCallback(async ({ silent = false, forceRefresh = false } = {}) => {
+    if (!silent) setError(null)
     const maxAttempts = 4
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        const res = await fetch('/api/dashboard')
+        const res = await fetch(forceRefresh ? '/api/dashboard?refresh=1' : '/api/dashboard')
         if (res.status === 502 || res.status === 503) {
           if (attempt < maxAttempts - 1) {
             await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)))
@@ -67,10 +69,10 @@ function App() {
           console.warn('API missing quoteRecords — drill-down will be limited until backend restarts')
         }
         setData(json)
-        setDateRange(getInitialDateRange())
+        if (!silent) setDateRange(getInitialDateRange())
         return
       } catch (err) {
-        if (attempt === maxAttempts - 1) {
+        if (!silent && attempt === maxAttempts - 1) {
           setError(err.message)
         }
       }
@@ -80,6 +82,21 @@ function App() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (!data) return undefined
+
+    const timer = window.setInterval(() => {
+      loadData({ silent: true, forceRefresh: true })
+    }, 5 * 60_000)
+
+    return () => window.clearInterval(timer)
+  }, [data, loadData])
 
   useEffect(() => {
     headerCompactRef.current = headerCompact
@@ -186,9 +203,18 @@ function App() {
   const viewData =
     activeView === 'headOffice' ? filteredData?.headOffice : filteredData?.manchester
   const isBranch = activeView === 'manchester'
+  const alertSourceRecords = useMemo(() => {
+    const raw =
+      activeView === 'headOffice'
+        ? data?.headOffice?.quoteRecords
+        : data?.manchester?.quoteRecords
+    return withLiveExpiryRecords(raw ?? [], now)
+  }, [data, activeView, now])
+  const alertSummarySource =
+    activeView === 'headOffice' ? data?.headOffice?.summary : data?.manchester?.summary
   const dashboardAlerts = useMemo(
-    () => buildDashboardAlerts(viewData?.quoteRecords ?? [], viewData?.summary ?? {}),
-    [viewData],
+    () => buildDashboardAlerts(alertSourceRecords, alertSummarySource ?? {}, now),
+    [alertSourceRecords, alertSummarySource, now],
   )
 
   return (
@@ -228,6 +254,7 @@ function App() {
               leadSummary={filteredData.leadSummary}
               isBranch={isBranch}
               alertRequest={alertRequest}
+              alertQuoteRecords={alertSourceRecords}
               onAlertRequestHandled={() => setAlertRequest(null)}
             />
           )}

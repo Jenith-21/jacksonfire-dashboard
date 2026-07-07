@@ -1,4 +1,5 @@
 import { formatCurrency } from './format'
+import { isQuoteOpenForExpiry } from './quoteExpiry'
 
 export { formatCurrency }
 
@@ -318,7 +319,7 @@ export function filterQuotes(records, filter) {
     case 'expiringSoon':
       return records.filter(
         (r) =>
-          (r.status === 'DRAFT' || r.status === 'SUBMITTED') &&
+          isQuoteOpenForExpiry(r) &&
           r.daysUntilExpiry != null &&
           r.daysUntilExpiry >= 0 &&
           r.daysUntilExpiry <= 7,
@@ -326,7 +327,7 @@ export function filterQuotes(records, filter) {
     case 'overdueExpiry':
       return records.filter(
         (r) =>
-          (r.status === 'DRAFT' || r.status === 'SUBMITTED') &&
+          isQuoteOpenForExpiry(r) &&
           r.daysUntilExpiry != null &&
           r.daysUntilExpiry < 0,
       )

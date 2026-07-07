@@ -558,7 +558,14 @@ const currencyCol = (key, label) => ({
   render: (r) => formatCurrency(r[key]),
 })
 
-export function DashboardView({ view, leadSummary, isBranch, alertRequest, onAlertRequestHandled }) {
+export function DashboardView({
+  view,
+  leadSummary,
+  isBranch,
+  alertRequest,
+  alertQuoteRecords,
+  onAlertRequestHandled,
+}) {
   const [drillDown, setDrillDown] = useState(null)
   const [widgetFilters, setWidgetFilters] = useState({})
   const quoteRecords = view?.quoteRecords ?? []
@@ -579,9 +586,13 @@ export function DashboardView({ view, leadSummary, isBranch, alertRequest, onAle
 
   useEffect(() => {
     if (!alertRequest?.filter) return
-    openQuotes(alertRequest.filter, alertRequest.drillTitle, alertRequest.drillSubtitle)
+    const sourceRecords = alertQuoteRecords ?? quoteRecords
+    const filtered = filterQuotes(sourceRecords, alertRequest.filter)
+    setDrillDown(
+      buildQuoteDrillDown(filtered, alertRequest.drillTitle, alertRequest.drillSubtitle, alertRequest.filter),
+    )
     onAlertRequestHandled?.()
-  }, [alertRequest, openQuotes, onAlertRequestHandled])
+  }, [alertRequest, alertQuoteRecords, quoteRecords, onAlertRequestHandled])
 
   const openLeads = useCallback(
     (filter, title, subtitle) => {
