@@ -2,9 +2,20 @@ const { google } = require("googleapis");
 const path = require("path");
 const { buildDashboardPayload } = require("./analytics");
 
-const SPREADSHEET_ID =
+const SPREADSHEET_ID = normalizeSpreadsheetId(
   process.env.SPREADSHEET_ID ||
-  "1fDY22Lci5gC5Z4pU-vxX5Nv3eFnQDz0CvSWZ0CL5K_w";
+    "1fDY22Lci5gC5Z4pU-vxX5Nv3eFnQDz0CvSWZ0CL5K_w"
+);
+
+function normalizeSpreadsheetId(value) {
+  if (!value) return value;
+  const cleaned = String(value)
+    .trim()
+    .replace(/^SPREADSHEET_ID\s*[=:]?\s*/i, "")
+    .split(/\s+/)[0]
+    .trim();
+  return cleaned;
+}
 
 const CREDENTIALS_PATH =
   process.env.GOOGLE_CREDENTIALS_PATH ||
