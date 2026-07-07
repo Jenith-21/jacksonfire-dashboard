@@ -1,35 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import Loader from './components/Loader'
 import ViewSwitcher from './components/ViewSwitcher'
 import ThemeToggle from './components/ThemeToggle'
-import PdfExportModal from './components/PdfExportModal'
 import DateRangeFilter, { getDashboardDateBounds, getInitialDateRange } from './components/DateRangeFilter'
-import { DashboardView, formatDate } from './components/DashboardView'
-import { applyDateRangeToDashboard } from './utils/rebuildView'
+import QuoteTypeFilter from './components/QuoteTypeFilter'
+import AlertsButton from './components/AlertsButton'
+import { DashboardView } from './components/DashboardView'
+import { applyDashboardFilters } from './utils/rebuildView'
+import { buildDashboardAlerts } from './utils/buildDashboardAlerts'
 import './App.css'
-
-function DownloadIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M12 3v10m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
 
 function App() {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [showLoader, setShowLoader] = useState(true)
   const [activeView, setActiveView] = useState('headOffice')
-  const [pdfModalOpen, setPdfModalOpen] = useState(false)
   const [dateRange, setDateRange] = useState(() => getInitialDateRange())
+  const [quoteTypeFilter, setQuoteTypeFilter] = useState('all')
+  const [alertRequest, setAlertRequest] = useState(null)
   const [headerCompact, setHeaderCompact] = useState(false)
   const headerRef = useRef(null)
   const headerCompactRef = useRef(false)
@@ -145,8 +133,8 @@ function App() {
 
   const dateBounds = useMemo(() => getDashboardDateBounds(data), [data])
   const filteredData = useMemo(
-    () => applyDateRangeToDashboard(data, dateRange),
-    [data, dateRange],
+    () => applyDashboardFilters(data, { dateRange, quoteType: quoteTypeFilter }),
+    [data, dateRange, quoteTypeFilter],
   )
 
   useLayoutEffect(() => {
@@ -168,10 +156,6 @@ function App() {
 
     headerHeightRef.current = newHeight
   }, [headerCompact])
-
-  const setActiveViewForPdf = useCallback((viewId) => {
-    flushSync(() => setActiveView(viewId))
-  }, [])
 
   if (!showLoader && error) {
     return (
@@ -202,6 +186,10 @@ function App() {
   const viewData =
     activeView === 'headOffice' ? filteredData?.headOffice : filteredData?.manchester
   const isBranch = activeView === 'manchester'
+  const dashboardAlerts = useMemo(
+    () => buildDashboardAlerts(viewData?.quoteRecords ?? [], viewData?.summary ?? {}),
+    [viewData],
+  )
 
   return (
     <div className="app-shell">
@@ -217,12 +205,6 @@ function App() {
                 <img src="/jackson-logo.jpg" alt="Jackson Fire & Security" className="header-logo" />
               </div>
 
-              <div className="header-titles">
-                <p className="header-eyebrow">Jackson Fire &amp; Security</p>
-                <h1 className="header-title">Uptick Quote Reporting</h1>
-                <p className="header-tagline">Sales &amp; defect quote analytics from Uptick</p>
-              </div>
-
               <nav className="header-nav">
                 <ViewSwitcher
                   activeView={activeView}
@@ -232,23 +214,10 @@ function App() {
               </nav>
 
               <div className="header-actions">
+                <QuoteTypeFilter value={quoteTypeFilter} onChange={setQuoteTypeFilter} />
                 <DateRangeFilter value={dateRange} bounds={dateBounds} onChange={setDateRange} />
-                <button
-                  type="button"
-                  className="header-icon-btn header-pdf-btn"
-                  onClick={() => setPdfModalOpen(true)}
-                  aria-label="Download PDF"
-                >
-                  <DownloadIcon />
-                  <span className="header-btn-text">Download PDF</span>
-                </button>
-                <div className="header-actions-extra">
-                  <ThemeToggle dark={darkMode} onToggle={() => setDarkMode((d) => !d)} />
-                  <span className="sync-badge">
-                    <span className="sync-dot" aria-hidden="true" />
-                    Updated {formatDate(filteredData.lastUpdated)}
-                  </span>
-                </div>
+                <AlertsButton alerts={dashboardAlerts} onSelectAlert={setAlertRequest} />
+                <ThemeToggle dark={darkMode} onToggle={() => setDarkMode((d) => !d)} />
               </div>
             </div>
           </header>
@@ -258,6 +227,8 @@ function App() {
               view={viewData}
               leadSummary={filteredData.leadSummary}
               isBranch={isBranch}
+              alertRequest={alertRequest}
+              onAlertRequestHandled={() => setAlertRequest(null)}
             />
           )}
         </div>
@@ -266,14 +237,6 @@ function App() {
       {showLoader && (
         <Loader ready={!!data || !!error} onComplete={() => setShowLoader(false)} />
       )}
-
-      <PdfExportModal
-        open={pdfModalOpen}
-        onClose={() => setPdfModalOpen(false)}
-        lastUpdated={filteredData?.lastUpdated}
-        setActiveView={setActiveViewForPdf}
-        getActiveView={() => activeView}
-      />
     </div>
   )
 }

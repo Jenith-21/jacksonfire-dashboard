@@ -5,6 +5,7 @@ import {
   getQuoteDateBounds,
   toInputDate,
 } from '../utils/dateRange'
+import { HeaderPopover } from './HeaderPopover'
 
 function CalendarIcon() {
   return (
@@ -25,6 +26,7 @@ export default function DateRangeFilter({ value, bounds, onChange }) {
   const [draftFrom, setDraftFrom] = useState('')
   const [draftTo, setDraftTo] = useState('')
   const rootRef = useRef(null)
+  const triggerRef = useRef(null)
 
   const hasFilter = Boolean(value?.from || value?.to)
 
@@ -34,7 +36,10 @@ export default function DateRangeFilter({ value, bounds, onChange }) {
     setDraftTo(toInputDate(value?.to))
 
     function handleClick(event) {
-      if (!rootRef.current?.contains(event.target)) {
+      if (
+        !rootRef.current?.contains(event.target) &&
+        !event.target.closest('[data-header-popover]')
+      ) {
         setOpen(false)
       }
     }
@@ -68,6 +73,7 @@ export default function DateRangeFilter({ value, bounds, onChange }) {
   return (
     <div className="date-range-picker" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={`header-icon-btn date-range-trigger ${hasFilter ? 'is-active' : ''}`}
         onClick={() => setOpen((current) => !current)}
@@ -81,45 +87,49 @@ export default function DateRangeFilter({ value, bounds, onChange }) {
         </span>
       </button>
 
-      {open && (
-        <div className="date-range-popover" role="dialog" aria-label="Select date range">
-          <div className="date-range-popover-head">
-            <strong>Select date range</strong>
-            {hasFilter && (
-              <button type="button" className="date-range-clear" onClick={handleClear}>
-                Clear
-              </button>
-            )}
-          </div>
-
-          <div className="date-range-fields">
-            <label className="date-range-field">
-              <span>Start</span>
-              <input
-                type="date"
-                value={draftFrom}
-                min={toInputDate(bounds?.min)}
-                max={draftTo || toInputDate(bounds?.max)}
-                onChange={(e) => setDraftFrom(e.target.value)}
-              />
-            </label>
-            <label className="date-range-field">
-              <span>End</span>
-              <input
-                type="date"
-                value={draftTo}
-                min={draftFrom || toInputDate(bounds?.min)}
-                max={toInputDate(bounds?.max)}
-                onChange={(e) => setDraftTo(e.target.value)}
-              />
-            </label>
-          </div>
-
-          <button type="button" className="date-range-apply" onClick={handleApply}>
-            Apply
-          </button>
+      <HeaderPopover
+        open={open}
+        anchorRef={triggerRef}
+        className="date-range-popover"
+        role="dialog"
+        aria-label="Select date range"
+      >
+        <div className="date-range-popover-head">
+          <strong>Select Date Range</strong>
+          {hasFilter && (
+            <button type="button" className="date-range-clear" onClick={handleClear}>
+              Clear
+            </button>
+          )}
         </div>
-      )}
+
+        <div className="date-range-fields">
+          <label className="date-range-field">
+            <span>Start</span>
+            <input
+              type="date"
+              value={draftFrom}
+              min={toInputDate(bounds?.min)}
+              max={draftTo || toInputDate(bounds?.max)}
+              onChange={(e) => setDraftFrom(e.target.value)}
+            />
+          </label>
+          <label className="date-range-field">
+            <span>End</span>
+            <input
+              type="date"
+              value={draftTo}
+              min={draftFrom || toInputDate(bounds?.min)}
+              max={toInputDate(bounds?.max)}
+              onChange={(e) => setDraftTo(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <button type="button" className="date-range-apply" onClick={handleApply}>
+          Apply
+        </button>
+      </HeaderPopover>
     </div>
   )
 }

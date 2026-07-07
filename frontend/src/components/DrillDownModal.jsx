@@ -82,6 +82,7 @@ const BREAKDOWN_LABELS = {
   byClient: 'By client',
   byMonth: 'By month',
   bySource: 'By source',
+  byConversionBucket: 'By conversion window',
 }
 
 const SUMMARY_LABELS = {
@@ -92,6 +93,8 @@ const SUMMARY_LABELS = {
   wonValue: 'Won value',
   conversionRate: 'Conversion rate',
   avgConversion: 'Avg conversion',
+  avgSalesConversion: 'Avg sales conversion',
+  avgDefectConversion: 'Avg defect conversion',
   missingValue: 'Missing values',
 }
 
@@ -111,6 +114,13 @@ const QUOTE_COLUMNS = [
   { key: 'client', label: 'Client' },
   { key: 'salesperson', label: 'Salesperson' },
   { key: 'value', label: 'Value', className: 'col-num', format: formatCurrency },
+  {
+    key: 'conversionDays',
+    label: 'Days',
+    className: 'col-num',
+    sortValue: (row) => row.conversionDays ?? -1,
+    format: (value) => (value != null ? `${value}d` : '—'),
+  },
   { key: 'created', label: 'Created', format: formatDate },
 ]
 
@@ -130,7 +140,12 @@ export default function DrillDownModal({ data, onClose }) {
     subtitle,
   } = data ?? {}
   const hidden = new Set(hiddenColumns ?? [])
-  const quoteColumns = QUOTE_COLUMNS.filter((col) => !hidden.has(col.key))
+  const isConversionView = data?.filter?.type?.startsWith('conversion')
+  const quoteColumns = QUOTE_COLUMNS.filter((col) => {
+    if (hidden.has(col.key)) return false
+    if (col.key === 'conversionDays' && !isConversionView) return false
+    return true
+  })
   const recordColumns = isLead ? LEAD_COLUMNS : quoteColumns
   const sortedRecords = useMemo(
     () =>
@@ -146,7 +161,9 @@ export default function DrillDownModal({ data, onClose }) {
     setRecordSort(
       data.kind === 'leads'
         ? { key: 'date', direction: 'desc' }
-        : { key: 'value', direction: 'desc' },
+        : data.filter?.type?.startsWith('conversion')
+          ? { key: 'conversionDays', direction: 'desc' }
+          : { key: 'value', direction: 'desc' },
     )
   }, [data])
 
@@ -169,7 +186,7 @@ export default function DrillDownModal({ data, onClose }) {
   const pageRecords = sortedRecords.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
 
   const summaryItems = isLead
-    ? [{ key: 'count', label: 'Total leads', value: summary.count.toLocaleString() }]
+    ? [{ key: 'count', label: 'Total Leads', value: summary.count.toLocaleString() }]
     : (summaryKeys ?? ['count']).map((key) => {
         if (key === 'won') {
           return {
@@ -180,6 +197,8 @@ export default function DrillDownModal({ data, onClose }) {
         }
         if (key === 'missingValue' && summary.missingValueCount === 0) return null
         if (key === 'avgConversion' && summary.avgConversionDays == null) return null
+        if (key === 'avgSalesConversion' && summary.avgSalesConversionDays == null) return null
+        if (key === 'avgDefectConversion' && summary.avgDefectConversionDays == null) return null
 
         const value =
           key === 'count'
@@ -190,9 +209,13 @@ export default function DrillDownModal({ data, onClose }) {
                 ? `${summary.conversionRate}%`
                 : key === 'avgConversion'
                   ? `${summary.avgConversionDays} days`
-                  : key === 'missingValue'
-                    ? summary.missingValueCount.toLocaleString()
-                    : summary[key]
+                  : key === 'avgSalesConversion'
+                    ? `${summary.avgSalesConversionDays} days`
+                    : key === 'avgDefectConversion'
+                      ? `${summary.avgDefectConversionDays} days`
+                      : key === 'missingValue'
+                        ? summary.missingValueCount.toLocaleString()
+                        : summary[key]
 
         return { key, label: SUMMARY_LABELS[key] ?? key, value }
       }).filter(Boolean)

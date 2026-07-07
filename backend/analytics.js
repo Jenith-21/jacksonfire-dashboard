@@ -1,7 +1,15 @@
 const WON_STATUSES = new Set(["APPROVED", "COMPLETED", "FINALISED", "ACTIONED"]);
 const OPEN_STATUSES = new Set(["DRAFT", "SUBMITTED"]);
 
-const MANCHESTER_BRANCH = "Jackson Fire & Security Manchester";
+const MANCHESTER_BRANCH = "Manchester";
+const BRANCH_PREFIX = /^Jackson Fire\s*(?:&|and)\s*Security\s+/i;
+
+function normalizeBranch(name) {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return "(Unassigned)";
+  const stripped = trimmed.replace(BRANCH_PREFIX, "").trim();
+  return stripped || "(Unassigned)";
+}
 
 function parseNumber(value) {
   const num = parseFloat(String(value).replace(/[^0-9.-]/g, ""));
@@ -25,11 +33,6 @@ function formatMonthLabel(key) {
   return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 }
 
-function normalizeBranch(name) {
-  const trimmed = (name || "").trim();
-  return trimmed || "(Unassigned)";
-}
-
 function getQuoteCreatedDate(quote) {
   return parseDate(quote.quote_created_date || quote.created || quote.date);
 }
@@ -50,9 +53,29 @@ function getConversionDate(quote) {
   );
 }
 
+function getExpiryDate(quote) {
+  return parseDate(quote.expiry_date);
+}
+
+function daysUntil(date, from = new Date()) {
+  if (!date) return null;
+  const start = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const end = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((end - start) / (1000 * 60 * 60 * 24));
+}
+
 function daysBetween(start, end) {
   if (!start || !end) return null;
   return Math.max(0, Math.round((end - start) / (1000 * 60 * 60 * 24)));
+}
+
+function averageConversionDays(quotes, daysKey = "_conversionDays") {
+  const days = quotes
+    .map((q) => q[daysKey])
+    .filter((d) => d !== null && d !== undefined);
+  return days.length > 0
+    ? Math.round(days.reduce((a, b) => a + b, 0) / days.length)
+    : null;
 }
 
 function hasTouchpoint(quote) {
@@ -82,6 +105,7 @@ function round2(n) {
 function enrichQuote(quote, type) {
   const created = getQuoteCreatedDate(quote);
   const converted = getConversionDate(quote);
+  const expiryDate = getExpiryDate(quote);
   const rawValue = type === "service" ? getServiceValue(quote) : getDefectValue(quote);
   const value = rawValue;
   const status = (quote.status || "Unknown").toUpperCase();
@@ -100,6 +124,8 @@ function enrichQuote(quote, type) {
     _salesperson: salesperson,
     _isWon: WON_STATUSES.has(status),
     _conversionDays: WON_STATUSES.has(status) ? daysBetween(created, converted) : null,
+    _expiryDate: expiryDate,
+    _daysUntilExpiry: daysUntil(expiryDate),
     _hasTouchpoint: hasTouchpoint(quote),
     _touchpointCount: getTouchpointCount(quote),
     _hasMissingValue: hasMissingValue,
@@ -114,6 +140,14 @@ function getConversionBucket(days) {
   if (days <= 60) return "31–60 days";
   return "60+ days";
 }
+
+const CONVERSION_BUCKET_ORDER = [
+  "0–7 days",
+  "8–14 days",
+  "15–30 days",
+  "31–60 days",
+  "60+ days",
+];
 
 function getClientName(quote) {
   return (
@@ -130,7 +164,8 @@ function buildQuoteRecords(quotes) {
     if (q.viewed_via_link_at) touchpoints.push("Link");
     if (q.viewed_via_customer_portal_at) touchpoints.push("Portal");
     const reference =
-      (q.quote_reference || q.reference || q.quote_number || "").trim() || `Q-${index + 1}`;
+      (q.ref || q.quote_reference || q.reference || q.quote_number || "").trim() ||
+      `Q-${index + 1}`;
 
     return {
       id: `${q._type}-${reference}-${index}`,
@@ -143,6 +178,8 @@ function buildQuoteRecords(quotes) {
       salesperson: q._salesperson,
       branch: q._branch,
       created: q.quote_created_date || q.created || q.date || "",
+      expiryDate: q.expiry_date || "",
+      daysUntilExpiry: q._daysUntilExpiry,
       month: mk || "",
       monthLabel: mk ? formatMonthLabel(mk) : "—",
       isWon: q._isWon,
@@ -205,21 +242,21 @@ function buildSummary(quotes) {
   const serviceValue = sumBy(service, (q) => q._value);
   const defectValue = sumBy(defect, (q) => q._value);
   const wonQuotes = quotes.filter((q) => q._isWon);
+  const wonService = wonQuotes.filter((q) => q._type === "service");
+  const wonDefect = wonQuotes.filter((q) => q._type === "defect");
   const wonValue = sumBy(wonQuotes, (q) => q._value);
+  const wonSalesValue = sumBy(wonService, (q) => q._value);
+  const wonDefectValue = sumBy(wonDefect, (q) => q._value);
 
-  const conversionDays = wonQuotes
-    .map((q) => q._conversionDays)
-    .filter((d) => d !== null);
-  const avgConversionDays =
-    conversionDays.length > 0
-      ? Math.round(conversionDays.reduce((a, b) => a + b, 0) / conversionDays.length)
-      : null;
+  const avgConversionDays = averageConversionDays(wonQuotes);
+  const avgSalesConversionDays = averageConversionDays(wonService);
+  const avgDefectConversionDays = averageConversionDays(wonDefect);
 
   const withTouchpoints = quotes.filter((q) => q._hasTouchpoint).length;
   const missingValue = quotes.filter((q) => q._hasMissingValue).length;
   const expiredQuotes = quotes.filter((q) => q._status === "EXPIRED");
   const unassignedBranchQuotes = quotes.filter((q) => q._branch === "(Unassigned)");
-  const unassignedValue = sumBy(unassignedBranchQuotes, (q) => q._value);
+  const unassignedQuotes = unassignedBranchQuotes.length;
   const totalVal = serviceValue + defectValue;
 
   return {
@@ -236,16 +273,22 @@ function buildSummary(quotes) {
     expiredQuotes: expiredQuotes.length,
     expiredQuoteRate:
       quotes.length > 0 ? round2((expiredQuotes.length / quotes.length) * 100) : 0,
-    unassignedValue: round2(unassignedValue),
-    unassignedValueRate:
-      totalVal > 0 ? round2((unassignedValue / totalVal) * 100) : 0,
+    unassignedQuotes,
+    unassignedQuoteRate:
+      quotes.length > 0 ? round2((unassignedQuotes / quotes.length) * 100) : 0,
     wonQuotes: wonQuotes.length,
+    wonSalesQuotes: wonService.length,
+    wonDefectQuotes: wonDefect.length,
     wonValue,
+    wonSalesValue: round2(wonSalesValue),
+    wonDefectValue: round2(wonDefectValue),
     conversionRate:
       quotes.length > 0
         ? Math.round((wonQuotes.length / quotes.length) * 1000) / 10
         : 0,
     avgConversionDays,
+    avgSalesConversionDays,
+    avgDefectConversionDays,
     touchpointQuotes: withTouchpoints,
     touchpointRate:
       quotes.length > 0
@@ -368,8 +411,10 @@ function buildTopClients(quotes, limit = 10) {
     const client =
       (q.client_company_name || q.final_client_company || q.final_company || "").trim() ||
       "(Unknown client)";
-    if (!map[client]) map[client] = { client, quotes: 0, value: 0, won: 0, wonValue: 0 };
+    if (!map[client]) map[client] = { client, quotes: 0, salesQuotes: 0, defectQuotes: 0, value: 0, won: 0, wonValue: 0 };
     map[client].quotes++;
+    if (q._type === "service") map[client].salesQuotes++;
+    else map[client].defectQuotes++;
     map[client].value += q._value;
     if (q._isWon) {
       map[client].won++;
@@ -390,6 +435,8 @@ function buildSalespersonLeague(quotes) {
         name: person,
         quotesCreated: 0,
         quotesWon: 0,
+        salesQuotes: 0,
+        defectQuotes: 0,
         totalQuotedValue: 0,
         wonValue: 0,
         conversionDays: [],
@@ -398,6 +445,8 @@ function buildSalespersonLeague(quotes) {
     const row = map[person];
     row.quotesCreated++;
     row.totalQuotedValue += q._value;
+    if (q._type === "service") row.salesQuotes++;
+    else row.defectQuotes++;
     if (q._isWon) {
       row.quotesWon++;
       row.wonValue += q._value;
@@ -410,6 +459,8 @@ function buildSalespersonLeague(quotes) {
       name: row.name,
       quotesCreated: row.quotesCreated,
       quotesWon: row.quotesWon,
+      salesQuotes: row.salesQuotes,
+      defectQuotes: row.defectQuotes,
       conversionRate:
         row.quotesCreated > 0
           ? Math.round((row.quotesWon / row.quotesCreated) * 1000) / 10
@@ -426,15 +477,11 @@ function buildSalespersonLeague(quotes) {
               row.conversionDays.reduce((a, b) => a + b, 0) / row.conversionDays.length
             )
           : null,
-      efficiencyScore:
-        row.quotesCreated > 0
-          ? Math.round((row.wonValue / row.quotesCreated) * 100) / 100
-          : 0,
     }))
     .sort((a, b) => {
       if (a.name === "(Unassigned)") return 1
       if (b.name === "(Unassigned)") return -1
-      return b.efficiencyScore - a.efficiencyScore
+      return b.wonValue - a.wonValue
     })
 }
 
@@ -503,25 +550,20 @@ function buildTouchpointBreakdown(quotes) {
 }
 
 function buildConversionTiming(quotes) {
-  const buckets = {
-    "0–7 days": 0,
-    "8–14 days": 0,
-    "15–30 days": 0,
-    "31–60 days": 0,
-    "60+ days": 0,
-  };
+  const won = quotes.filter((q) => q._isWon && q._conversionDays !== null);
 
-  for (const q of quotes.filter((x) => x._isWon)) {
-    const days = q._conversionDays;
-    if (days === null) continue;
-    if (days <= 7) buckets["0–7 days"]++;
-    else if (days <= 14) buckets["8–14 days"]++;
-    else if (days <= 30) buckets["15–30 days"]++;
-    else if (days <= 60) buckets["31–60 days"]++;
-    else buckets["60+ days"]++;
-  }
+  return CONVERSION_BUCKET_ORDER.map((bucket) => {
+    const inBucket = won.filter((q) => getConversionBucket(q._conversionDays) === bucket);
+    const sales = inBucket.filter((q) => q._type === "service").length;
+    const defect = inBucket.filter((q) => q._type === "defect").length;
 
-  return Object.entries(buckets).map(([name, value]) => ({ name, value }));
+    return {
+      name: bucket,
+      sales,
+      defect,
+      value: inBucket.length,
+    };
+  });
 }
 
 function buildDataGaps(allQuotes, leads) {

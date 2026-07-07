@@ -30,6 +30,10 @@ export function getQuoteBreakdownKeys(filter) {
 
   const exclude = new Set()
   switch (filter.type) {
+    case 'conversion':
+    case 'conversionType':
+    case 'conversionBucketType':
+      return ['byConversionBucket', 'byType', 'bySalesperson', 'byBranch']
     case 'status':
     case 'statusPivot':
       exclude.add('byStatus')
@@ -74,6 +78,11 @@ export function getQuoteSummaryKeys(filter) {
 
   switch (filter.type) {
     case 'won':
+      return ['count', 'totalValue', 'avgValue', 'wonValue', 'avgConversion']
+    case 'conversion':
+    case 'conversionType':
+    case 'conversionBucketType':
+      return ['count', 'avgConversion', 'avgSalesConversion', 'avgDefectConversion']
     case 'conversionBucket':
       return ['count', 'totalValue', 'avgValue', 'wonValue', 'avgConversion']
     case 'missingValue':
@@ -130,6 +139,7 @@ export function getLeadBreakdownKeys(filter) {
 }
 
 function buildQuoteBreakdowns(records, keys) {
+  const won = records.filter((r) => r.isWon)
   const builders = {
     byStatus: () => sumByValue(records, (r) => r.status),
     byType: () => sumByValue(records, (r) => r.type),
@@ -137,6 +147,11 @@ function buildQuoteBreakdowns(records, keys) {
     byBranch: () => sumByValue(records, (r) => r.branch).slice(0, 15),
     byClient: () => sumByValue(records, (r) => r.client).slice(0, 15),
     byMonth: () => sumByValue(records, (r) => r.monthLabel || '—'),
+    byConversionBucket: () =>
+      sumByValue(
+        won.filter((r) => r.conversionBucket),
+        (r) => r.conversionBucket,
+      ),
   }
 
   const breakdowns = {}
@@ -172,6 +187,22 @@ export function buildQuoteDrillDown(records, title, subtitle, filter) {
     conversionDays.length > 0
       ? Math.round(conversionDays.reduce((a, b) => a + b, 0) / conversionDays.length)
       : null
+  const salesWon = won.filter((r) => r.typeKey === 'service')
+  const defectWon = won.filter((r) => r.typeKey === 'defect')
+  const salesConversionDays = salesWon
+    .map((r) => r.conversionDays)
+    .filter((d) => d !== null && d !== undefined)
+  const defectConversionDays = defectWon
+    .map((r) => r.conversionDays)
+    .filter((d) => d !== null && d !== undefined)
+  const avgSalesConversion =
+    salesConversionDays.length > 0
+      ? Math.round(salesConversionDays.reduce((a, b) => a + b, 0) / salesConversionDays.length)
+      : null
+  const avgDefectConversion =
+    defectConversionDays.length > 0
+      ? Math.round(defectConversionDays.reduce((a, b) => a + b, 0) / defectConversionDays.length)
+      : null
 
   const breakdownKeys = getQuoteBreakdownKeys(filter)
   const summaryKeys = getQuoteSummaryKeys(filter)
@@ -194,10 +225,17 @@ export function buildQuoteDrillDown(records, title, subtitle, filter) {
       conversionRate:
         records.length > 0 ? Math.round((won.length / records.length) * 1000) / 10 : 0,
       avgConversionDays: avgConversion,
+      avgSalesConversionDays: avgSalesConversion,
+      avgDefectConversionDays: avgDefectConversion,
       missingValueCount: records.filter((r) => r.hasMissingValue).length,
     },
     breakdowns: buildQuoteBreakdowns(records, breakdownKeys),
-    records: [...records].sort((a, b) => (b.value || 0) - (a.value || 0)),
+    records: [...records].sort((a, b) => {
+      if (filter?.type?.startsWith('conversion')) {
+        return (b.conversionDays ?? -1) - (a.conversionDays ?? -1)
+      }
+      return (b.value || 0) - (a.value || 0)
+    }),
   }
 }
 
@@ -228,6 +266,22 @@ export function filterQuotes(records, filter) {
       return records
     case 'won':
       return records.filter((r) => r.isWon)
+    case 'conversion':
+      return records.filter((r) => r.isWon && r.conversionDays != null)
+    case 'conversionType':
+      if (filter.typeKey === 'all') {
+        return records.filter((r) => r.isWon && r.conversionDays != null)
+      }
+      return records.filter(
+        (r) => r.isWon && r.conversionDays != null && r.typeKey === filter.typeKey,
+      )
+    case 'conversionBucketType':
+      return records.filter(
+        (r) =>
+          r.isWon &&
+          r.conversionBucket === filter.bucket &&
+          r.type === filter.quoteType,
+      )
     case 'missingValue':
       return records.filter((r) => r.hasMissingValue)
     case 'type':
@@ -259,6 +313,23 @@ export function filterQuotes(records, filter) {
       return records.filter((r) => r.branch === filter.value)
     case 'client':
       return records.filter((r) => r.client === filter.value)
+    case 'reference':
+      return records.filter((r) => r.reference === filter.value)
+    case 'expiringSoon':
+      return records.filter(
+        (r) =>
+          (r.status === 'DRAFT' || r.status === 'SUBMITTED') &&
+          r.daysUntilExpiry != null &&
+          r.daysUntilExpiry >= 0 &&
+          r.daysUntilExpiry <= 7,
+      )
+    case 'overdueExpiry':
+      return records.filter(
+        (r) =>
+          (r.status === 'DRAFT' || r.status === 'SUBMITTED') &&
+          r.daysUntilExpiry != null &&
+          r.daysUntilExpiry < 0,
+      )
     case 'conversionBucket':
       return records.filter((r) => r.isWon && r.conversionBucket === filter.value)
     case 'touchpoint':

@@ -85,3 +85,47 @@ export function createBarEndLabel(minWidth = 28) {
     )
   }
 }
+
+const SALES_DEFECT_SERIES_ORDER = ['Sales quotes', 'Defect quotes', 'Value']
+
+export function sortSalesDefectSeries(items = []) {
+  return [...items].sort((a, b) => {
+    const aIndex = SALES_DEFECT_SERIES_ORDER.indexOf(a.name ?? a.value)
+    const bIndex = SALES_DEFECT_SERIES_ORDER.indexOf(b.name ?? b.value)
+    if (aIndex === -1 && bIndex === -1) return 0
+    if (aIndex === -1) return 1
+    if (bIndex === -1) return -1
+    return aIndex - bIndex
+  })
+}
+
+export function salesDefectLegendPayload(salesColor, defectColor) {
+  return [
+    { value: 'Sales quotes', type: 'square', color: salesColor },
+    { value: 'Defect quotes', type: 'square', color: defectColor },
+  ]
+}
+
+export function ChartLegendItems({ items = [] }) {
+  return (
+    <div className="chart-legend" role="list" aria-label="Chart legend">
+      {items.map((item) => (
+        <span key={item.value} className="chart-legend-item" role="listitem">
+          <span className="chart-legend-swatch" style={{ backgroundColor: item.color }} aria-hidden="true" />
+          <span>{item.value}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+export function SalesDefectLegendContent({ salesColor, defectColor }) {
+  return (
+    <ChartLegendItems
+      items={salesDefectLegendPayload(salesColor, defectColor).map((item) => ({
+        value: item.value,
+        color: item.color,
+      }))}
+    />
+  )
+}

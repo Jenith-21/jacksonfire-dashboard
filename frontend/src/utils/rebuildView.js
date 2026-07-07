@@ -18,23 +18,32 @@ function countBy(items, keyFn) {
     .sort((a, b) => b.value - a.value)
 }
 
+function averageConversionDays(records) {
+  const days = records.map((r) => r.conversionDays).filter((d) => d != null)
+  return days.length > 0
+    ? Math.round(days.reduce((a, b) => a + b, 0) / days.length)
+    : null
+}
+
 function buildSummary(records) {
   const service = records.filter((r) => r.typeKey === 'service')
   const defect = records.filter((r) => r.typeKey === 'defect')
   const serviceValue = service.reduce((sum, r) => sum + (r.value || 0), 0)
   const defectValue = defect.reduce((sum, r) => sum + (r.value || 0), 0)
   const won = records.filter((r) => r.isWon)
+  const wonService = won.filter((r) => r.typeKey === 'service')
+  const wonDefect = won.filter((r) => r.typeKey === 'defect')
   const wonValue = won.reduce((sum, r) => sum + (r.value || 0), 0)
-  const conversionDays = won.map((r) => r.conversionDays).filter((d) => d != null)
-  const avgConversionDays =
-    conversionDays.length > 0
-      ? Math.round(conversionDays.reduce((a, b) => a + b, 0) / conversionDays.length)
-      : null
+  const wonSalesValue = wonService.reduce((sum, r) => sum + (r.value || 0), 0)
+  const wonDefectValue = wonDefect.reduce((sum, r) => sum + (r.value || 0), 0)
+  const avgConversionDays = averageConversionDays(won)
+  const avgSalesConversionDays = averageConversionDays(wonService)
+  const avgDefectConversionDays = averageConversionDays(wonDefect)
   const withTouchpoints = records.filter((r) => r.hasTouchpoint).length
   const missingValue = records.filter((r) => r.hasMissingValue).length
   const expiredQuotes = records.filter((r) => r.status === 'EXPIRED')
   const unassignedBranchQuotes = records.filter((r) => r.branch === '(Unassigned)')
-  const unassignedValue = unassignedBranchQuotes.reduce((sum, r) => sum + (r.value || 0), 0)
+  const unassignedQuotes = unassignedBranchQuotes.length
   const totalVal = serviceValue + defectValue
 
   return {
@@ -50,13 +59,20 @@ function buildSummary(records) {
     expiredQuotes: expiredQuotes.length,
     expiredQuoteRate:
       records.length > 0 ? round2((expiredQuotes.length / records.length) * 100) : 0,
-    unassignedValue: round2(unassignedValue),
-    unassignedValueRate: totalVal > 0 ? round2((unassignedValue / totalVal) * 100) : 0,
+    unassignedQuotes,
+    unassignedQuoteRate:
+      records.length > 0 ? round2((unassignedQuotes / records.length) * 100) : 0,
     wonQuotes: won.length,
+    wonSalesQuotes: wonService.length,
+    wonDefectQuotes: wonDefect.length,
     wonValue: round2(wonValue),
+    wonSalesValue: round2(wonSalesValue),
+    wonDefectValue: round2(wonDefectValue),
     conversionRate:
       records.length > 0 ? Math.round((won.length / records.length) * 1000) / 10 : 0,
     avgConversionDays,
+    avgSalesConversionDays,
+    avgDefectConversionDays,
     touchpointQuotes: withTouchpoints,
     touchpointRate:
       records.length > 0 ? Math.round((withTouchpoints / records.length) * 1000) / 10 : 0,
@@ -171,8 +187,10 @@ function buildTopClients(records, limit = 10) {
   const map = {}
   for (const record of records) {
     const client = record.client || '(Unknown client)'
-    if (!map[client]) map[client] = { client, quotes: 0, value: 0, won: 0, wonValue: 0 }
+    if (!map[client]) map[client] = { client, quotes: 0, salesQuotes: 0, defectQuotes: 0, value: 0, won: 0, wonValue: 0 }
     map[client].quotes++
+    if (record.typeKey === 'service') map[client].salesQuotes++
+    else map[client].defectQuotes++
     map[client].value += record.value || 0
     if (record.isWon) {
       map[client].won++
@@ -194,6 +212,8 @@ function buildSalespersonLeague(records) {
         name: person,
         quotesCreated: 0,
         quotesWon: 0,
+        salesQuotes: 0,
+        defectQuotes: 0,
         totalQuotedValue: 0,
         wonValue: 0,
         conversionDays: [],
@@ -202,6 +222,8 @@ function buildSalespersonLeague(records) {
     const row = map[person]
     row.quotesCreated++
     row.totalQuotedValue += record.value || 0
+    if (record.typeKey === 'service') row.salesQuotes++
+    else row.defectQuotes++
     if (record.isWon) {
       row.quotesWon++
       row.wonValue += record.value || 0
@@ -214,6 +236,8 @@ function buildSalespersonLeague(records) {
       name: row.name,
       quotesCreated: row.quotesCreated,
       quotesWon: row.quotesWon,
+      salesQuotes: row.salesQuotes,
+      defectQuotes: row.defectQuotes,
       conversionRate:
         row.quotesCreated > 0
           ? Math.round((row.quotesWon / row.quotesCreated) * 1000) / 10
@@ -226,13 +250,11 @@ function buildSalespersonLeague(records) {
         row.conversionDays.length > 0
           ? Math.round(row.conversionDays.reduce((a, b) => a + b, 0) / row.conversionDays.length)
           : null,
-      efficiencyScore:
-        row.quotesCreated > 0 ? round2(row.wonValue / row.quotesCreated) : 0,
     }))
     .sort((a, b) => {
       if (a.name === '(Unassigned)') return 1
       if (b.name === '(Unassigned)') return -1
-      return b.efficiencyScore - a.efficiencyScore
+      return b.wonValue - a.wonValue
     })
 }
 
@@ -299,26 +321,29 @@ function buildTouchpoints(records) {
   ]
 }
 
+const CONVERSION_BUCKET_ORDER = [
+  '0–7 days',
+  '8–14 days',
+  '15–30 days',
+  '31–60 days',
+  '60+ days',
+]
+
 function buildConversionTiming(records) {
-  const buckets = {
-    '0–7 days': 0,
-    '8–14 days': 0,
-    '15–30 days': 0,
-    '31–60 days': 0,
-    '60+ days': 0,
-  }
+  const won = records.filter((r) => r.isWon && r.conversionDays != null)
 
-  for (const record of records.filter((r) => r.isWon)) {
-    const days = record.conversionDays
-    if (days == null) continue
-    if (days <= 7) buckets['0–7 days']++
-    else if (days <= 14) buckets['8–14 days']++
-    else if (days <= 30) buckets['15–30 days']++
-    else if (days <= 60) buckets['31–60 days']++
-    else buckets['60+ days']++
-  }
+  return CONVERSION_BUCKET_ORDER.map((bucket) => {
+    const inBucket = won.filter((r) => r.conversionBucket === bucket)
+    const sales = inBucket.filter((r) => r.typeKey === 'service').length
+    const defect = inBucket.filter((r) => r.typeKey === 'defect').length
 
-  return Object.entries(buckets).map(([name, value]) => ({ name, value }))
+    return {
+      name: bucket,
+      sales,
+      defect,
+      value: inBucket.length,
+    }
+  })
 }
 
 export function rebuildViewFromRecords(records) {
@@ -368,28 +393,38 @@ export function rebuildLeadSummary(leadRecords, baseSummary = {}) {
 }
 
 
-export function applyDateRangeToDashboard(data, dateRange) {
-  if (!data) return null
-  if (!dateRange?.from && !dateRange?.to) return data
+export function filterQuoteRecordsByType(records, quoteType = 'all') {
+  if (!records?.length || quoteType === 'all') return records ?? []
+  return records.filter((record) => record.typeKey === quoteType)
+}
 
-  const filteredHeadOffice = filterQuoteRecordsByDateRange(
-    data.headOffice?.quoteRecords ?? [],
-    dateRange,
-  )
-  const filteredManchester = filterQuoteRecordsByDateRange(
-    data.manchester?.quoteRecords ?? [],
-    dateRange,
-  )
-  const filteredLeads = filterLeadRecordsByDateRange(
-    data.leadSummary?.leadRecords ?? [],
-    dateRange,
-  )
+export function applyDashboardFilters(data, { dateRange, quoteType = 'all' } = {}) {
+  if (!data) return null
+
+  const hasDateFilter = Boolean(dateRange?.from || dateRange?.to)
+  const hasTypeFilter = quoteType && quoteType !== 'all'
+
+  if (!hasDateFilter && !hasTypeFilter) return data
+
+  const filterQuotes = (records) =>
+    filterQuoteRecordsByType(filterQuoteRecordsByDateRange(records ?? [], dateRange), quoteType)
+
+  const filteredHeadOffice = filterQuotes(data.headOffice?.quoteRecords)
+  const filteredManchester = filterQuotes(data.manchester?.quoteRecords)
+  const filteredLeads = hasDateFilter
+    ? filterLeadRecordsByDateRange(data.leadSummary?.leadRecords ?? [], dateRange)
+    : (data.leadSummary?.leadRecords ?? [])
 
   return {
     ...data,
     headOffice: rebuildViewFromRecords(filteredHeadOffice),
     manchester: rebuildViewFromRecords(filteredManchester),
     leadSummary: rebuildLeadSummary(filteredLeads, data.leadSummary),
-    dateRangeApplied: true,
+    dateRangeApplied: hasDateFilter,
+    quoteTypeApplied: hasTypeFilter ? quoteType : null,
   }
+}
+
+export function applyDateRangeToDashboard(data, dateRange) {
+  return applyDashboardFilters(data, { dateRange, quoteType: 'all' })
 }

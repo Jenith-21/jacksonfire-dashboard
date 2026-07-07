@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import {
   BarChart,
   Bar,
@@ -29,10 +29,20 @@ import {
   createStackSegmentLabel,
   createBarTopLabel,
   createBarEndLabel,
+  SalesDefectLegendContent,
+  ChartLegendItems,
 } from '../utils/chartLabels.jsx'
 import { getChartClickPayload } from '../utils/chartEvents'
 import { nextSortState, sortRows, sortRowsPinnedBottom } from '../utils/tableSort'
 import SortableTh from './SortableTh'
+import QuoteTypeSwitcher from './QuoteTypeSwitcher'
+import {
+  buildWidgetQuoteView,
+  applyWidgetQuoteType,
+  adaptTableColumnsForQuoteFilter,
+  adaptStatusPivotRows,
+  filterChartSlices,
+} from '../utils/widgetQuoteFilter'
 
 export { formatCurrency, formatDate }
 
@@ -65,31 +75,44 @@ const CHART_PALETTE = [
   '#F4B4BC',
 ]
 
-function buildQuoteStatusStackData(breakdown) {
-  if (!breakdown?.length) return { data: [], statuses: [] }
+function buildQuoteStatusChartData(statusPivot = [], series) {
+  const countKey = series === 'sales' ? 'salesQuote' : 'defectQuote'
 
-  const statusTotals = {}
-  for (const row of breakdown) {
-    statusTotals[row.status] = (statusTotals[row.status] || 0) + row.quoteCount
-  }
-  const statuses = Object.entries(statusTotals)
-    .sort((a, b) => b[1] - a[1])
-    .map(([status]) => status)
-
-  const data = ['Sales Quote', 'Defect Quote'].map((quoteType) => {
-    const entry = { quoteType }
-    for (const status of statuses) {
-      const match = breakdown.find((r) => r.quoteType === quoteType && r.status === status)
-      entry[status] = match?.quoteCount ?? 0
-    }
-    return entry
-  })
-
-  return { data, statuses }
+  return [...statusPivot]
+    .map((row) => ({
+      status: row.status,
+      count: row[countKey],
+    }))
+    .sort((a, b) => b.count - a.count)
 }
 
-function lookupStatusRow(breakdown, quoteType, status) {
-  return breakdown.find((r) => r.quoteType === quoteType && r.status === status)
+function QuoteStatusBarChart({ data, color, series, onBarClick }) {
+  return (
+    <ResponsiveContainer width="100%" height={340}>
+      <BarChart data={data} margin={{ top: 16, right: 12, left: 4, bottom: 56 }}>
+        <XAxis
+          dataKey="status"
+          tick={{ fill: 'var(--chart-tick)', fontSize: 10 }}
+          interval={0}
+          angle={-35}
+          textAnchor="end"
+          height={72}
+        />
+        <YAxis allowDecimals={false} tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
+        <Tooltip content={<ChartTooltip />} />
+        <Bar
+          dataKey="count"
+          name="Quotes"
+          fill={color}
+          radius={[6, 6, 0, 0]}
+          cursor="pointer"
+          onClick={(entry) => onBarClick(entry, series)}
+        >
+          <LabelList dataKey="count" content={BAR_TOP_LABEL} />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  )
 }
 
 const STAT_ICONS = {
@@ -160,13 +183,28 @@ function SectionHeading({ title, subtitle }) {
   )
 }
 
-function Widget({ title, subtitle, children, className = '', span }) {
+function useWidgetQuoteView(records, quoteType) {
+  return useMemo(() => buildWidgetQuoteView(records, quoteType), [records, quoteType])
+}
+
+function Widget({ title, subtitle, children, className = '', span, quoteFilter, onQuoteFilterChange }) {
+  const showFilter = typeof onQuoteFilterChange === 'function'
+
   return (
     <article className={`widget ${span ? `widget--${span}` : ''} ${className}`.trim()}>
-      {(title || subtitle) && (
-        <header className="widget-header">
-          {title && <h3 className="widget-title">{title}</h3>}
-          {subtitle && <p className="widget-subtitle">{subtitle}</p>}
+      {(title || subtitle || showFilter) && (
+        <header
+          className={`widget-header ${showFilter && !title && !subtitle ? 'widget-header--filter-only' : ''}`.trim()}
+        >
+          {(title || subtitle) && (
+            <div className="widget-header-main">
+              {title && <h3 className="widget-title">{title}</h3>}
+              {subtitle && <p className="widget-subtitle">{subtitle}</p>}
+            </div>
+          )}
+          {showFilter && (
+            <QuoteTypeSwitcher value={quoteFilter ?? 'all'} onChange={onQuoteFilterChange} />
+          )}
         </header>
       )}
       <div className="widget-body">{children}</div>
@@ -187,14 +225,14 @@ export function MetricDefinitionsPanel() {
   return (
     <div className="metric-definitions-wrap">
       <details className="metric-definitions">
-        <summary className="metric-definitions-summary">How metrics are calculated</summary>
+        <summary className="metric-definitions-summary">How Metrics Are Calculated</summary>
         <div className="metric-definitions-grid">
         <div className="metric-def-item">
-          <h4>Won quotes</h4>
+          <h4>Won Quotes</h4>
           <p>Counts quotes with status: APPROVED, COMPLETED, FINALISED or ACTIONED.</p>
         </div>
         <div className="metric-def-item">
-          <h4>Conversion time</h4>
+          <h4>Conversion Time</h4>
           <p>
             Days from quote created to converted. Start: <code>quote_created_date</code>, then{' '}
             <code>created</code>, then <code>date</code>. End: <code>status_changed_approved</code>, then{' '}
@@ -202,11 +240,7 @@ export function MetricDefinitionsPanel() {
           </p>
         </div>
         <div className="metric-def-item">
-          <h4>Efficiency</h4>
-          <p>Won value ÷ quotes created (salesperson league table).</p>
-        </div>
-        <div className="metric-def-item">
-          <h4>Customer touchpoints</h4>
+          <h4>Customer Touchpoints</h4>
           <p>
             <code>viewed_via_email_at</code> — email view · <code>viewed_via_link_at</code> — link view ·{' '}
             <code>viewed_via_customer_portal_at</code> — portal view
@@ -222,7 +256,7 @@ export function DataInsightsPanel({ summary }) {
   const insights = [
     {
       title: 'Branch Assignment Gap',
-      headline: `${summary.unassignedValueRate ?? 0}% of quote value is unassigned to any branch`,
+      headline: `${summary.unassignedQuoteRate ?? 0}% of quotes are unassigned to any branch`,
       impact:
         'Impact: Prevents proper lead ownership, follow-up accountability, and branch-level performance tracking',
       recommendation:
@@ -251,7 +285,7 @@ export function DataInsightsPanel({ summary }) {
   ]
 
   return (
-    <Widget title="Data insights" className="widget--insights">
+    <Widget title="Data Insights" className="widget--insights">
       <div className="gaps-grid">
         {insights.map((insight) => (
           <div key={insight.title} className={`gap-card gap-${insight.tone}`}>
@@ -273,30 +307,44 @@ export function AnalysisTable({
   rows,
   onRowClick,
   defaultSort,
+  quoteFilter,
+  onQuoteFilterChange,
 }) {
   const [sort, setSort] = useState(defaultSort ?? null)
+  const displayColumns = useMemo(
+    () => adaptTableColumnsForQuoteFilter(columns, quoteFilter),
+    [columns, quoteFilter],
+  )
 
   const sortedRows = useMemo(
-    () => (sort ? sortRows(rows, sort.key, sort.direction, columns) : rows),
-    [rows, sort, columns],
+    () => (sort ? sortRows(rows, sort.key, sort.direction, displayColumns) : rows),
+    [rows, sort, displayColumns],
   )
 
   const handleSort = (key) => setSort((current) => nextSortState(current, key))
 
   const getRowKey = (row, index) => {
     if (row.id) return row.id
+    if (row.bucket) return row.bucket
     if (row.quoteType && row.status) return `${row.quoteType}-${row.status}`
+    if (row.quoteType) return row.quoteType
     if (row.month && row.quoteType) return `${row.month}-${row.quoteType}`
     return `row-${index}`
   }
 
   return (
-    <Widget title={title} subtitle={subtitle} className="widget--table">
+    <Widget
+      title={title}
+      subtitle={subtitle}
+      className="widget--table"
+      quoteFilter={quoteFilter}
+      onQuoteFilterChange={onQuoteFilterChange}
+    >
       <div className="table-surface">
         <table className="data-table">
           <thead>
             <tr>
-              {columns.map((col) => (
+              {displayColumns.map((col) => (
                 <SortableTh
                   key={col.key}
                   column={col}
@@ -310,7 +358,7 @@ export function AnalysisTable({
           <tbody>
             {sortedRows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} className="empty">
+                <td colSpan={displayColumns.length} className="empty">
                   No data
                 </td>
               </tr>
@@ -321,7 +369,7 @@ export function AnalysisTable({
                   className={onRowClick ? 'clickable-row' : ''}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
                 >
-                  {columns.map((col) => (
+                  {displayColumns.map((col) => (
                     <td key={col.key} className={col.className || ''}>
                       {col.render ? col.render(row) : row[col.key]}
                     </td>
@@ -346,17 +394,23 @@ export function LeagueTable({
   defaultSort,
   unrankedNames = [],
   nameKey,
+  quoteFilter,
+  onQuoteFilterChange,
 }) {
   const [sort, setSort] = useState(defaultSort ?? null)
   const rowNameKey = nameKey ?? columns[0]?.key ?? 'name'
   const pinnedNames = unrankedNames
+  const displayColumns = useMemo(
+    () => adaptTableColumnsForQuoteFilter(columns, quoteFilter),
+    [columns, quoteFilter],
+  )
 
   const sortedRows = useMemo(() => {
     if (pinnedNames.length > 0) {
-      return sortRowsPinnedBottom(rows, sort?.key, sort?.direction, columns, pinnedNames, rowNameKey)
+      return sortRowsPinnedBottom(rows, sort?.key, sort?.direction, displayColumns, pinnedNames, rowNameKey)
     }
-    return sort ? sortRows(rows, sort.key, sort.direction, columns) : rows
-  }, [rows, sort, columns, pinnedNames, rowNameKey])
+    return sort ? sortRows(rows, sort.key, sort.direction, displayColumns) : rows
+  }, [rows, sort, displayColumns, pinnedNames, rowNameKey])
 
   const handleSort = (key) => setSort((current) => nextSortState(current, key))
   const pinnedSet = useMemo(() => new Set(pinnedNames), [pinnedNames])
@@ -364,7 +418,13 @@ export function LeagueTable({
   let rankCounter = 0
 
   return (
-    <Widget title={title} subtitle={subtitle} className="widget--table widget--league">
+    <Widget
+      title={title}
+      subtitle={subtitle}
+      className="widget--table widget--league"
+      quoteFilter={quoteFilter}
+      onQuoteFilterChange={onQuoteFilterChange}
+    >
       <div className="table-surface league-table-surface">
         <table className="league-table data-table">
           <thead>
@@ -372,7 +432,7 @@ export function LeagueTable({
               <th className="rank-col sticky-col sticky-col--left" scope="col">
                 #
               </th>
-              {columns.map((col) => (
+              {displayColumns.map((col) => (
                 <SortableTh
                   key={col.key}
                   column={col}
@@ -380,7 +440,7 @@ export function LeagueTable({
                   onSort={handleSort}
                   className={[
                     col.className || '',
-                    col.key === columns[0]?.key ? 'name-col sticky-col sticky-col--name' : '',
+                    col.key === displayColumns[0]?.key ? 'name-col sticky-col sticky-col--name' : '',
                     col.key === highlightCol ? 'highlight-col sticky-col sticky-col--right' : '',
                   ]
                     .filter(Boolean)
@@ -392,7 +452,7 @@ export function LeagueTable({
           <tbody>
             {sortedRows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length + 1} className="empty">
+                <td colSpan={displayColumns.length + 1} className="empty">
                   No data
                 </td>
               </tr>
@@ -416,17 +476,17 @@ export function LeagueTable({
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                   >
                     <td className="rank-col sticky-col sticky-col--left">{isUnranked ? '—' : rank}</td>
-                    {columns.map((col) => (
+                    {displayColumns.map((col) => (
                       <td
                         key={col.key}
                         className={[
                           col.className || '',
-                          col.key === columns[0]?.key ? 'name-col sticky-col sticky-col--name' : '',
+                          col.key === displayColumns[0]?.key ? 'name-col sticky-col sticky-col--name' : '',
                           col.key === highlightCol ? 'highlight-col sticky-col sticky-col--right' : '',
                         ]
                           .filter(Boolean)
                           .join(' ')}
-                        title={col.key === columns[0]?.key ? rowLabel : undefined}
+                        title={col.key === displayColumns[0]?.key ? rowLabel : undefined}
                       >
                         {col.render ? col.render(row) : row[col.key]}
                       </td>
@@ -498,18 +558,30 @@ const currencyCol = (key, label) => ({
   render: (r) => formatCurrency(r[key]),
 })
 
-export function DashboardView({ view, leadSummary, isBranch }) {
+export function DashboardView({ view, leadSummary, isBranch, alertRequest, onAlertRequestHandled }) {
   const [drillDown, setDrillDown] = useState(null)
+  const [widgetFilters, setWidgetFilters] = useState({})
   const quoteRecords = view?.quoteRecords ?? []
   const leadRecords = leadSummary?.leadRecords ?? []
 
+  const getWidgetFilter = useCallback((id) => widgetFilters[id] ?? 'all', [widgetFilters])
+  const setWidgetFilter = useCallback((id, value) => {
+    setWidgetFilters((current) => ({ ...current, [id]: value }))
+  }, [])
+
   const openQuotes = useCallback(
-    (filter, title, subtitle) => {
-      const filtered = filterQuotes(quoteRecords, filter)
+    (filter, title, subtitle, widgetQuoteType = 'all') => {
+      const filtered = applyWidgetQuoteType(filterQuotes(quoteRecords, filter), widgetQuoteType)
       setDrillDown(buildQuoteDrillDown(filtered, title, subtitle, filter))
     },
-    [quoteRecords]
+    [quoteRecords],
   )
+
+  useEffect(() => {
+    if (!alertRequest?.filter) return
+    openQuotes(alertRequest.filter, alertRequest.drillTitle, alertRequest.drillSubtitle)
+    onAlertRequestHandled?.()
+  }, [alertRequest, openQuotes, onAlertRequestHandled])
 
   const openLeads = useCallback(
     (filter, title, subtitle) => {
@@ -522,20 +594,21 @@ export function DashboardView({ view, leadSummary, isBranch }) {
   const closeDrillDown = useCallback(() => setDrillDown(null), [])
 
   const onPieClick = useCallback(
-    (entry, titlePrefix) => {
+    (entry, titlePrefix, widgetQuoteType = 'all') => {
       const data = getChartClickPayload(entry) ?? entry
       if (!data?.name) return
       openQuotes(
         { type: 'type', value: data.name },
         `${titlePrefix}: ${data.name}`,
-        `${data.value} quotes`
+        `${data.value} quotes`,
+        widgetQuoteType,
       )
     },
-    [openQuotes]
+    [openQuotes],
   )
 
   const onBarClick = useCallback(
-    (entry, filterType, titlePrefix) => {
+    (entry, filterType, titlePrefix, widgetQuoteType = 'all') => {
       const data = getChartClickPayload(entry) ?? entry
       if (!data?.name) return
       const filter =
@@ -546,71 +619,153 @@ export function DashboardView({ view, leadSummary, isBranch }) {
             : filterType === 'month'
               ? { type: 'month', value: data.label || data.name }
               : { type: 'status', value: data.name }
-      openQuotes(filter, `${titlePrefix}: ${data.name || data.label}`, `${data.value} quotes`)
-    },
-    [openQuotes]
-  )
-
-  const onTouchpointClick = useCallback(
-    (entry) => {
-      const data = getChartClickPayload(entry) ?? entry
-      if (!data?.name) return
       openQuotes(
-        { type: 'touchpoint', value: data.name },
-        `Touchpoint: ${data.name}`,
-        `${data.value} quotes`
+        filter,
+        `${titlePrefix}: ${data.name || data.label}`,
+        `${data.value} quotes`,
+        widgetQuoteType,
       )
     },
-    [openQuotes]
+    [openQuotes],
   )
 
+  const onConversionChartClick = useCallback(
+    (entry, series, widgetQuoteType = 'all') => {
+      const data = getChartClickPayload(entry) ?? entry
+      if (!data?.name) return
+      if (series === 'sales') {
+        openQuotes(
+          { type: 'conversionBucketType', bucket: data.name, quoteType: 'Sales Quote' },
+          `Sales conversion: ${data.name}`,
+          `${data.sales ?? 0} won sales quotes`,
+          widgetQuoteType,
+        )
+      } else if (series === 'defect') {
+        openQuotes(
+          { type: 'conversionBucketType', bucket: data.name, quoteType: 'Defect Quote' },
+          `Defect conversion: ${data.name}`,
+          `${data.defect ?? 0} won defect quotes`,
+          widgetQuoteType,
+        )
+      } else {
+        openQuotes(
+          { type: 'conversionBucket', value: data.name },
+          `Conversion timing: ${data.name}`,
+          `${data.value ?? 0} won quotes`,
+          widgetQuoteType,
+        )
+      }
+    },
+    [openQuotes],
+  )
+
+  const openConversionBreakdown = useCallback(() => {
+    openQuotes(
+      { type: 'conversion' },
+      'Conversion time breakdown',
+      'Won quotes with measurable conversion time — sales and defect split',
+    )
+  }, [openQuotes])
+
   const onMonthlyTrendClick = useCallback(
-    (entry, series) => {
+    (entry, series, widgetQuoteType = 'all') => {
       const data = getChartClickPayload(entry) ?? entry
       if (!data?.label) return
       if (series === 'value') {
         openQuotes(
           { type: 'month', value: data.month, monthLabel: data.label },
           `Monthly value: ${data.label}`,
-          formatCurrency(data.value)
+          formatCurrency(data.value),
+          widgetQuoteType,
         )
       } else if (series === 'sales') {
         openQuotes(
           { type: 'monthType', month: data.month, monthLabel: data.label, quoteType: 'Sales Quote' },
           `Sales quotes: ${data.label}`,
-          `${data.salesCount} quotes`
+          `${data.salesCount} quotes`,
+          widgetQuoteType,
         )
       } else {
         openQuotes(
           { type: 'monthType', month: data.month, monthLabel: data.label, quoteType: 'Defect Quote' },
           `Defect quotes: ${data.label}`,
-          `${data.defectCount} quotes`
+          `${data.defectCount} quotes`,
+          widgetQuoteType,
         )
       }
     },
-    [openQuotes]
+    [openQuotes],
   )
 
   const summary = view?.summary ?? {}
   const quoteStatusBreakdown = view?.quoteStatusBreakdown ?? []
-  const quoteStatusStack = useMemo(
-    () => buildQuoteStatusStackData(quoteStatusBreakdown),
-    [quoteStatusBreakdown]
+
+  const pieFilter = getWidgetFilter('quoteTypePie')
+  const statusBarFilter = getWidgetFilter('quoteStatuses')
+  const monthlyTrendFilter = getWidgetFilter('monthlyTrend')
+  const salesStatusFilter = getWidgetFilter('salesQuoteStatus')
+  const defectStatusFilter = getWidgetFilter('defectQuoteStatus')
+  const statusPivotFilter = getWidgetFilter('statusPivot')
+  const monthlyBreakdownFilter = getWidgetFilter('monthlyBreakdown')
+  const conversionFilter = getWidgetFilter('conversionTiming')
+  const salespersonFilter = getWidgetFilter('salespersonLeague')
+  const branchFilter = getWidgetFilter('branchLeague')
+  const topClientsFilter = getWidgetFilter('topClients')
+
+  const pieView = useWidgetQuoteView(quoteRecords, pieFilter)
+  const statusBarView = useWidgetQuoteView(quoteRecords, statusBarFilter)
+  const monthlyTrendView = useWidgetQuoteView(quoteRecords, monthlyTrendFilter)
+  const salesStatusView = useWidgetQuoteView(quoteRecords, salesStatusFilter)
+  const defectStatusView = useWidgetQuoteView(quoteRecords, defectStatusFilter)
+  const statusPivotView = useWidgetQuoteView(quoteRecords, statusPivotFilter)
+  const monthlyBreakdownView = useWidgetQuoteView(quoteRecords, monthlyBreakdownFilter)
+  const conversionView = useWidgetQuoteView(quoteRecords, conversionFilter)
+  const salespersonView = useWidgetQuoteView(quoteRecords, salespersonFilter)
+  const branchView = useWidgetQuoteView(quoteRecords, branchFilter)
+  const topClientsView = useWidgetQuoteView(quoteRecords, topClientsFilter)
+
+  const salesStatusChart = useMemo(
+    () => buildQuoteStatusChartData(salesStatusView.statusPivot, 'sales'),
+    [salesStatusView.statusPivot],
   )
-  const statusPivot = view?.statusPivot ?? []
-  const monthlyQuoteDetail = view?.monthlyQuoteDetail ?? []
-  const monthlyBreakdown = view?.monthlyBreakdown ?? []
-  const quoteTypeSplit = view?.quoteTypeSplit ?? []
-  const statusBreakdown = view?.statusBreakdown ?? []
-  const conversionTiming = (view?.conversionTiming ?? []).filter((row) => row.name !== 'Unknown')
-  const touchpoints = view?.touchpoints ?? []
-  const salespersonLeague = view?.salespersonLeague ?? []
-  const branchLeague = view?.branchLeague ?? []
-  const topClients = view?.topClients ?? []
+  const defectStatusChart = useMemo(
+    () => buildQuoteStatusChartData(defectStatusView.statusPivot, 'defect'),
+    [defectStatusView.statusPivot],
+  )
+
+  const onStatusChartClick = useCallback(
+    (entry, series, widgetQuoteType = 'all') => {
+      const data = getChartClickPayload(entry) ?? entry
+      if (!data?.status || !data?.count) return
+      const quoteType = series === 'sales' ? 'Sales Quote' : 'Defect Quote'
+      const detail = quoteStatusBreakdown.find(
+        (row) => row.quoteType === quoteType && row.status === data.status,
+      )
+      openQuotes(
+        { type: 'typeStatus', quoteType, status: data.status },
+        `${quoteType}: ${data.status}`,
+        `${data.count} quotes · ${formatCurrency(detail?.totalValue ?? 0)}`,
+        widgetQuoteType,
+      )
+    },
+    [openQuotes, quoteStatusBreakdown],
+  )
+
+  const quoteTypeSplit = filterChartSlices(pieView.quoteTypeSplit, pieFilter)
+  const statusBreakdown = statusBarView.statusBreakdown ?? []
+  const statusPivot = adaptStatusPivotRows(statusPivotView.statusPivot ?? [], statusPivotFilter)
+  const monthlyQuoteDetail = monthlyBreakdownView.monthlyQuoteDetail ?? []
+  const monthlyBreakdown = monthlyTrendView.monthlyBreakdown ?? []
+  const conversionTiming = conversionView.conversionTiming ?? []
+  const salespersonLeague = salespersonView.salespersonLeague ?? []
+  const branchLeague = branchView.branchLeague ?? []
+  const topClients = topClientsView.topClients ?? []
 
   const salesColumns = [
     { key: 'name', label: 'Salesperson', className: 'name-col' },
     { key: 'quotesCreated', label: 'Quotes', className: 'col-num' },
+    { key: 'salesQuotes', label: 'Sales', className: 'col-num' },
+    { key: 'defectQuotes', label: 'Defect', className: 'col-num' },
     { key: 'quotesWon', label: 'Won', className: 'col-num' },
     {
       key: 'conversionRate',
@@ -620,31 +775,25 @@ export function DashboardView({ view, leadSummary, isBranch }) {
       sortValue: (r) => r.conversionRate,
     },
     currencyCol('totalQuotedValue', 'Total'),
-    currencyCol('wonValue', 'Won value'),
-    currencyCol('avgQuoteValue', 'Avg quote'),
-    {
-      key: 'avgConversionDays',
-      label: 'Days',
-      className: 'col-num',
-      render: (r) => (r.avgConversionDays != null ? `${r.avgConversionDays}d` : '—'),
-      sortValue: (r) => r.avgConversionDays ?? -1,
-    },
-    currencyCol('efficiencyScore', 'Efficiency'),
+    currencyCol('wonValue', 'Won Value'),
+    currencyCol('avgQuoteValue', 'Avg Quote'),
   ]
 
   const branchColumns = [
     { key: 'branch', label: 'Branch' },
     { key: 'quotes', label: 'Quotes' },
-    currencyCol('value', 'Quote value'),
+    { key: 'salesQuotes', label: 'Sales' },
+    { key: 'defectQuotes', label: 'Defect' },
+    currencyCol('value', 'Quote Value'),
     {
       key: 'valueShare',
-      label: '% of total',
+      label: '% of Total',
       render: (r) => `${r.valueShare}%`,
       sortValue: (r) => r.valueShare,
     },
     {
       key: 'expiredRate',
-      label: '% expired',
+      label: '% Expired',
       render: (r) => `${r.expiredRate}%`,
       sortValue: (r) => r.expiredRate,
     },
@@ -655,29 +804,29 @@ export function DashboardView({ view, leadSummary, isBranch }) {
       render: (r) => `${r.conversionRate}%`,
       sortValue: (r) => r.conversionRate,
     },
-    { key: 'salesQuotes', label: 'Sales' },
-    { key: 'defectQuotes', label: 'Defect' },
   ]
 
   const clientColumns = [
     { key: 'client', label: 'Client' },
     { key: 'quotes', label: 'Quotes' },
-    currencyCol('value', 'Total value'),
-    currencyCol('wonValue', 'Won value'),
+    { key: 'salesQuotes', label: 'Sales' },
+    { key: 'defectQuotes', label: 'Defect' },
+    currencyCol('value', 'Total Value'),
+    currencyCol('wonValue', 'Won Value'),
   ]
 
   const statusPivotColumns = [
     { key: 'status', label: 'Status' },
-    { key: 'salesQuote', label: 'Sales quote', className: 'col-num' },
-    { key: 'defectQuote', label: 'Defect quote', className: 'col-num' },
+    { key: 'salesQuote', label: 'Sales Quote', className: 'col-num' },
+    { key: 'defectQuote', label: 'Defect Quote', className: 'col-num' },
     { key: 'total', label: 'Total', className: 'col-num' },
   ]
 
   const monthlyDetailColumns = [
     { key: 'month', label: 'Month', sortValue: (r) => r.monthKey || r.month },
-    { key: 'quoteCount', label: 'Quote count', className: 'col-num' },
-    currencyCol('totalValue', 'Total value'),
-    currencyCol('averageValue', 'Average value'),
+    { key: 'quoteCount', label: 'Quote Count', className: 'col-num' },
+    currencyCol('totalValue', 'Total Value'),
+    currencyCol('averageValue', 'Average Value'),
   ]
 
   return (
@@ -685,18 +834,18 @@ export function DashboardView({ view, leadSummary, isBranch }) {
       <DrillDownModal data={drillDown} onClose={closeDrillDown} />
 
       <section className="kpi-section">
-        <SectionHeading title="Overview" subtitle="Key quote metrics at a glance" />
+        <SectionHeading title="Overview" subtitle="Key Quote Metrics at a Glance" />
         <div className="stats-layout">
           <div className="stats-hero">
             <StatCard
-              label="Total quote value"
+              label="Total Quote Value"
               value={formatCurrency(summary.totalValue)}
               accent="primary"
               featured
               onClick={() => openQuotes({ type: 'all' }, 'All quotes by value', 'Sorted by value')}
             />
             <StatCard
-              label="Total quotes"
+              label="Total Quotes"
               value={summary.totalQuotes.toLocaleString()}
               accent="blue"
               featured
@@ -705,13 +854,13 @@ export function DashboardView({ view, leadSummary, isBranch }) {
           </div>
           <div className="stats-grid">
             <StatCard
-              label="Average quote value"
+              label="Average Quote Value"
               value={formatCurrency(summary.avgQuoteValue ?? 0)}
               accent="slate"
               onClick={() => openQuotes({ type: 'all' }, 'All quotes', 'Average value breakdown')}
             />
             <StatCard
-              label="Quotes with missing values"
+              label="Quotes With Missing Values"
               value={(summary.quotesMissingValue ?? 0).toLocaleString()}
               sub={`${summary.missingValueRate ?? 0}% of all quotes`}
               accent="amber"
@@ -720,35 +869,41 @@ export function DashboardView({ view, leadSummary, isBranch }) {
               }
             />
             <StatCard
-              label="Sales vs defect"
+              label="Sales vs Defect"
               value={`${summary.salesQuotes} / ${summary.defectQuotes}`}
               sub={`${formatCurrency(summary.salesValue)} sales · ${formatCurrency(summary.defectValue)} defect`}
               accent="blue"
               onClick={() => openQuotes({ type: 'all' }, 'Sales vs defect', 'All quotes by type')}
             />
             <StatCard
-              label="Won quotes"
+              label="Won Quotes"
               value={summary.wonQuotes.toLocaleString()}
-              sub={`${summary.conversionRate}% conversion`}
+              sub={`${(summary.wonSalesQuotes ?? 0).toLocaleString()} sales / ${(summary.wonDefectQuotes ?? 0).toLocaleString()} defect · ${summary.conversionRate}% conversion`}
               accent="green"
               onClick={() => openQuotes({ type: 'won' }, 'Won quotes', 'Approved, completed, finalised & actioned')}
             />
             <StatCard
-              label="Won value"
+              label="Won Value"
               value={formatCurrency(summary.wonValue)}
+              sub={`${formatCurrency(summary.wonSalesValue ?? 0)} sales · ${formatCurrency(summary.wonDefectValue ?? 0)} defect`}
               accent="green"
               onClick={() => openQuotes({ type: 'won' }, 'Won quote value', 'Value from won quotes')}
             />
             <StatCard
-              label="Avg conversion time"
+              label="Avg Conversion Time"
               value={summary.avgConversionDays != null ? `${summary.avgConversionDays} days` : '—'}
+              sub={
+                summary.avgSalesConversionDays != null || summary.avgDefectConversionDays != null
+                  ? `${summary.avgSalesConversionDays != null ? `${summary.avgSalesConversionDays}d` : '—'} sales · ${summary.avgDefectConversionDays != null ? `${summary.avgDefectConversionDays}d` : '—'} defect`
+                  : undefined
+              }
               accent="teal"
-              onClick={() => openQuotes({ type: 'won' }, 'Won quotes — conversion timing', 'Days from created to converted')}
+              onClick={openConversionBreakdown}
             />
             {!isBranch && (
               <>
                 <StatCard
-                  label="Expired quotes"
+                  label="Expired Quotes"
                   value={`${summary.expiredQuoteRate ?? 0}%`}
                   sub={`${(summary.expiredQuotes ?? 0).toLocaleString()} of ${summary.totalQuotes.toLocaleString()} quotes`}
                   accent="amber"
@@ -757,15 +912,15 @@ export function DashboardView({ view, leadSummary, isBranch }) {
                   }
                 />
                 <StatCard
-                  label="Unassigned quote value"
-                  value={`${summary.unassignedValueRate ?? 0}%`}
-                  sub={`${formatCurrency(summary.unassignedValue ?? 0)} with no branch`}
+                  label="Unassigned Quotes"
+                  value={`${summary.unassignedQuoteRate ?? 0}%`}
+                  sub={`${(summary.unassignedQuotes ?? 0).toLocaleString()} of ${summary.totalQuotes.toLocaleString()} quotes with no branch`}
                   accent="amber"
                   onClick={() =>
                     openQuotes(
                       { type: 'branch', value: '(Unassigned)' },
                       'Unassigned branch quotes',
-                      `${formatCurrency(summary.unassignedValue ?? 0)} total value`
+                      `${(summary.unassignedQuotes ?? 0).toLocaleString()} quotes with no branch`
                     )
                   }
                 />
@@ -777,7 +932,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
       </section>
 
       {isBranch && (
-        <Section title="Leads (Manchester)" subtitle="Lead sheet data — not matched to quotes">
+        <Section title="Leads (Manchester)" subtitle="Lead Sheet Data — Not Matched to Quotes">
           <div className="bento-grid bento-grid--leads">
             <div
               className="leads-count-card clickable"
@@ -786,7 +941,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
               tabIndex={0}
               onKeyDown={(e) => e.key === 'Enter' && openLeads({ type: 'all' }, 'All Manchester leads', `${leadSummary.total} leads`)}
             >
-              <span className="stat-label">Total leads</span>
+              <span className="stat-label">Total Leads</span>
               <span className="stat-value">{leadSummary.total.toLocaleString()}</span>
             </div>
 
@@ -803,7 +958,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
               />
             </Widget>
 
-            <Widget title="Leads by month" className="widget--chart">
+            <Widget title="Leads by Month" className="widget--chart">
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={leadSummary.monthlyLeads || []}>
                   <XAxis dataKey="label" tick={{ fill: 'var(--chart-tick)', fontSize: 10 }} />
@@ -834,9 +989,14 @@ export function DashboardView({ view, leadSummary, isBranch }) {
         </Section>
       )}
 
-      <Section title="Quote overview" subtitle="Distribution by type and status">
+      <Section title="Quote Overview" subtitle="Distribution by Type and Status">
         <div className="bento-grid bento-grid--2">
-          <Widget title="Sales vs defect quotes" className="widget--chart">
+          <Widget
+            title="Sales vs Defect Quotes"
+            className="widget--chart"
+            quoteFilter={pieFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('quoteTypePie', value)}
+          >
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
                 <Pie
@@ -850,7 +1010,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
                   paddingAngle={2}
                   label={({ name, value }) => `${name}: ${value}`}
                   cursor="pointer"
-                  onClick={(entry) => onPieClick(entry, 'Quote type')}
+                  onClick={(entry) => onPieClick(entry, 'Quote type', pieFilter)}
                 >
                   {quoteTypeSplit.map((_, i) => (
                     <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
@@ -861,7 +1021,12 @@ export function DashboardView({ view, leadSummary, isBranch }) {
               </PieChart>
             </ResponsiveContainer>
           </Widget>
-          <Widget title="Quote statuses" className="widget--chart">
+          <Widget
+            title="Quote Statuses"
+            className="widget--chart"
+            quoteFilter={statusBarFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('quoteStatuses', value)}
+          >
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={statusBreakdown.slice(0, 10)} layout="vertical" margin={{ left: 12, right: 42, top: 8, bottom: 4 }}>
                 <XAxis type="number" allowDecimals={false} tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
@@ -874,7 +1039,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
                   radius={[0, 6, 6, 0]}
                   background={{ fill: 'var(--chart-track)' }}
                   cursor="pointer"
-                  onClick={(entry) => onBarClick(entry, 'status', 'Status')}
+                  onClick={(entry) => onBarClick(entry, 'status', 'Status', statusBarFilter)}
                 >
                   <LabelList dataKey="value" content={BAR_END_LABEL} />
                 </Bar>
@@ -885,14 +1050,18 @@ export function DashboardView({ view, leadSummary, isBranch }) {
       </Section>
 
       <Section
-        title="Monthly quote trend"
+        title="Monthly Quote Trend"
         subtitle={
           isBranch
-            ? 'Manchester — sales and defect quote counts with total value over time'
-            : 'Sales and defect quote counts with total value over time'
+            ? 'Manchester — Sales and Defect Quote Counts With Total Value Over Time'
+            : 'Sales and Defect Quote Counts With Total Value Over Time'
         }
       >
-        <Widget className="widget--wide widget--chart">
+        <Widget
+          className="widget--wide widget--chart"
+          quoteFilter={monthlyTrendFilter}
+          onQuoteFilterChange={(value) => setWidgetFilter('monthlyTrend', value)}
+        >
           <ResponsiveContainer width="100%" height={340}>
             <ComposedChart data={monthlyBreakdown} margin={{ top: 24, right: 12, left: 4, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" vertical={false} />
@@ -900,31 +1069,34 @@ export function DashboardView({ view, leadSummary, isBranch }) {
               <YAxis yAxisId="left" allowDecimals={false} tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
               <YAxis yAxisId="right" orientation="right" tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
               <Tooltip content={<ChartTooltip />} />
-              <Legend />
-              <Bar
-                yAxisId="left"
-                dataKey="salesCount"
-                stackId="a"
-                fill={CHART.primary}
-                name="Sales quotes"
-                radius={[0, 0, 0, 0]}
-                cursor="pointer"
-                onClick={(entry) => onMonthlyTrendClick(entry, 'sales')}
-              >
-                <LabelList dataKey="salesCount" content={STACK_SEGMENT_LABEL} />
-              </Bar>
-              <Bar
-                yAxisId="left"
-                dataKey="defectCount"
-                stackId="a"
-                fill={CHART.secondary}
-                name="Defect quotes"
-                radius={[6, 6, 0, 0]}
-                cursor="pointer"
-                onClick={(entry) => onMonthlyTrendClick(entry, 'defect')}
-              >
-                <LabelList dataKey="defectCount" content={STACK_SEGMENT_LABEL} />
-              </Bar>
+              {(monthlyTrendFilter === 'all' || monthlyTrendFilter === 'service') && (
+                <Bar
+                  yAxisId="left"
+                  dataKey="salesCount"
+                  stackId="a"
+                  fill={CHART.primary}
+                  name="Sales Quotes"
+                  radius={monthlyTrendFilter === 'service' ? [6, 6, 0, 0] : [0, 0, 0, 0]}
+                  cursor="pointer"
+                  onClick={(entry) => onMonthlyTrendClick(entry, 'sales', monthlyTrendFilter)}
+                >
+                  <LabelList dataKey="salesCount" content={STACK_SEGMENT_LABEL} />
+                </Bar>
+              )}
+              {(monthlyTrendFilter === 'all' || monthlyTrendFilter === 'defect') && (
+                <Bar
+                  yAxisId="left"
+                  dataKey="defectCount"
+                  stackId="a"
+                  fill={CHART.secondary}
+                  name="Defect Quotes"
+                  radius={[6, 6, 0, 0]}
+                  cursor="pointer"
+                  onClick={(entry) => onMonthlyTrendClick(entry, 'defect', monthlyTrendFilter)}
+                >
+                  <LabelList dataKey="defectCount" content={STACK_SEGMENT_LABEL} />
+                </Bar>
+              )}
               <Line
                 yAxisId="right"
                 type="monotone"
@@ -936,7 +1108,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
                 activeDot={{
                   r: 6,
                   cursor: 'pointer',
-                  onClick: (_, payload) => onMonthlyTrendClick(payload.payload, 'value'),
+                  onClick: (_, payload) => onMonthlyTrendClick(payload.payload, 'value', monthlyTrendFilter),
                 }}
               >
                 <LabelList
@@ -947,182 +1119,198 @@ export function DashboardView({ view, leadSummary, isBranch }) {
                   style={LINE_LABEL_STYLE}
                 />
               </Line>
+              <Legend
+                content={
+                  <ChartLegendItems
+                    items={[
+                      ...(monthlyTrendFilter === 'all' || monthlyTrendFilter === 'service'
+                        ? [{ value: 'Sales Quotes', color: CHART.primary }]
+                        : []),
+                      ...(monthlyTrendFilter === 'all' || monthlyTrendFilter === 'defect'
+                        ? [{ value: 'Defect Quotes', color: CHART.secondary }]
+                        : []),
+                      { value: 'Value', color: CHART.line },
+                    ]}
+                  />
+                }
+              />
             </ComposedChart>
           </ResponsiveContainer>
         </Widget>
       </Section>
 
-      <Section title="Quote analysis" subtitle="Detailed breakdowns by type, status and month">
+      <Section title="Quote Analysis" subtitle="Detailed Breakdowns by Type, Status and Month">
         <div className="bento-grid bento-grid--analysis">
           <Widget
-            title="Quote status breakdown"
-            subtitle="Tap a segment for details"
-            className="widget--chart widget--span-2"
+            title="Sales Quote Status"
+            subtitle="Sorted by Quote Count — Tap a Bar for Details"
+            className="widget--chart"
+            quoteFilter={salesStatusFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('salesQuoteStatus', value)}
           >
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={quoteStatusStack.data} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
-                <XAxis dataKey="quoteType" tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
-                <YAxis allowDecimals={false} tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 12 }} />
-                {quoteStatusStack.statuses.map((status, i) => (
-                  <Bar
-                    key={status}
-                    dataKey={status}
-                    name={status}
-                    stackId="status"
-                    fill={CHART_PALETTE[i % CHART_PALETTE.length]}
-                    cursor="pointer"
-                    onClick={(entry) => {
-                      const row = getChartClickPayload(entry)
-                      if (!row) return
-                      const count = row[status]
-                      if (!count) return
-                      const detail = lookupStatusRow(
-                        quoteStatusBreakdown,
-                        row.quoteType,
-                        status
-                      )
-                      openQuotes(
-                        { type: 'typeStatus', quoteType: row.quoteType, status },
-                        `${row.quoteType}: ${status}`,
-                        `${count} quotes · ${formatCurrency(detail?.totalValue ?? 0)}`
-                      )
-                    }}
-                  >
-                    <LabelList dataKey={status} content={STACK_SEGMENT_LABEL} />
-                  </Bar>
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
+            <QuoteStatusBarChart
+              data={salesStatusChart}
+              color={CHART.primary}
+              series="sales"
+              onBarClick={(entry, series) => onStatusChartClick(entry, series, salesStatusFilter)}
+            />
+          </Widget>
+          <Widget
+            title="Defect Quote Status"
+            subtitle="Sorted by Quote Count — Tap a Bar for Details"
+            className="widget--chart"
+            quoteFilter={defectStatusFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('defectQuoteStatus', value)}
+          >
+            <QuoteStatusBarChart
+              data={defectStatusChart}
+              color={CHART.secondary}
+              series="defect"
+              onBarClick={(entry, series) => onStatusChartClick(entry, series, defectStatusFilter)}
+            />
           </Widget>
           <AnalysisTable
-            title="Status pivot"
-            subtitle="Counts by status across sales and defect"
+            title="Status Pivot"
+            subtitle="Counts by Status Across Sales and Defect"
             columns={statusPivotColumns}
             rows={statusPivot}
+            quoteFilter={statusPivotFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('statusPivot', value)}
             defaultSort={{ key: 'total', direction: 'desc' }}
             onRowClick={(row) =>
               openQuotes(
                 { type: 'statusPivot', status: row.status },
                 `Status: ${row.status}`,
-                `${row.total} quotes (${row.salesQuote} sales · ${row.defectQuote} defect)`
+                `${row.total} quotes (${row.salesQuote} sales · ${row.defectQuote} defect)`,
+                statusPivotFilter,
               )
             }
           />
           <AnalysisTable
-            title="Monthly quote breakdown"
-            subtitle="Month, count, total value and average"
+            title="Monthly Quote Breakdown"
+            subtitle="Month, Count, Total Value and Average"
             columns={monthlyDetailColumns}
             rows={monthlyQuoteDetail}
+            quoteFilter={monthlyBreakdownFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('monthlyBreakdown', value)}
             defaultSort={{ key: 'month', direction: 'desc' }}
             onRowClick={(row) =>
               openQuotes(
                 { type: 'month', value: row.monthKey, monthLabel: row.month },
                 `Quotes: ${row.month}`,
-                `${row.quoteCount} quotes · ${formatCurrency(row.totalValue)}`
+                `${row.quoteCount} quotes · ${formatCurrency(row.totalValue)}`,
+                monthlyBreakdownFilter,
               )
             }
           />
         </div>
       </Section>
 
-      <Section title="Conversion &amp; engagement" subtitle="Time to convert and customer touchpoints">
-        <div className="bento-grid bento-grid--2">
-          <Widget title="Conversion timing (won quotes)" className="widget--chart">
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={conversionTiming} margin={{ top: 20, right: 8, left: 4, bottom: 4 }}>
-                <XAxis dataKey="name" tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
-                <YAxis allowDecimals={false} tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
-                <Tooltip content={<ChartTooltip />} />
+      <Section title="Conversion &amp; Engagement" subtitle="Time to Convert Won Quotes">
+        <Widget
+          title="Average Conversion Timing"
+          className="widget--chart"
+          quoteFilter={conversionFilter}
+          onQuoteFilterChange={(value) => setWidgetFilter('conversionTiming', value)}
+        >
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={conversionTiming} margin={{ top: 20, right: 8, left: 4, bottom: 4 }}>
+              <XAxis dataKey="name" tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
+              <YAxis allowDecimals={false} tick={{ fill: 'var(--chart-tick)', fontSize: 11 }} />
+              <Tooltip content={<ChartTooltip />} />
+              {(conversionFilter === 'all' || conversionFilter === 'service') && (
                 <Bar
-                  dataKey="value"
-                  name="Quotes"
+                  dataKey="sales"
+                  name="Sales Quotes"
+                  fill={CHART.primary}
+                  radius={[6, 6, 0, 0]}
+                  cursor="pointer"
+                  onClick={(entry) => onConversionChartClick(entry, 'sales', conversionFilter)}
+                >
+                  <LabelList dataKey="sales" content={BAR_TOP_LABEL} />
+                </Bar>
+              )}
+              {(conversionFilter === 'all' || conversionFilter === 'defect') && (
+                <Bar
+                  dataKey="defect"
+                  name="Defect Quotes"
                   fill={CHART.tertiary}
                   radius={[6, 6, 0, 0]}
                   cursor="pointer"
-                  onClick={(entry) => onBarClick(entry, 'conversion', 'Conversion timing')}
+                  onClick={(entry) => onConversionChartClick(entry, 'defect', conversionFilter)}
                 >
-                  <LabelList dataKey="value" content={BAR_TOP_LABEL} />
+                  <LabelList dataKey="defect" content={BAR_TOP_LABEL} />
                 </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </Widget>
-          <Widget title="Customer touchpoints" className="widget--chart">
-            <ResponsiveContainer width="100%" height={260}>
-              <PieChart>
-                <Pie
-                  data={touchpoints}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={48}
-                  outerRadius={82}
-                  paddingAngle={2}
-                  label={({ name, value }) => `${name}: ${value}`}
-                  cursor="pointer"
-                  onClick={(entry) => onTouchpointClick(entry)}
-                >
-                  {touchpoints.map((_, i) => (
-                    <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
-                  ))}
-                </Pie>
-                <Tooltip content={<ChartTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-          </Widget>
-        </div>
+              )}
+              {conversionFilter === 'all' ? (
+                <Legend
+                  verticalAlign="bottom"
+                  content={
+                    <SalesDefectLegendContent salesColor={CHART.primary} defectColor={CHART.tertiary} />
+                  }
+                />
+              ) : null}
+            </BarChart>
+          </ResponsiveContainer>
+        </Widget>
       </Section>
 
-      <Section title="Performance rankings" subtitle="Salespeople, branches and top clients">
+      <Section title="Performance Rankings" subtitle="Salespeople, Branches and Top Clients">
         <div className="bento-grid bento-grid--stack">
           <LeagueTable
-            title="Salesperson league table"
-            subtitle="Ranked by efficiency — tap a row for quote breakdown"
+            title="Salesperson League Table"
+            subtitle="Ranked by Won Value — Tap a Row for Quote Breakdown"
             columns={salesColumns}
             rows={salespersonLeague}
-            highlightCol="efficiencyScore"
-            defaultSort={{ key: 'efficiencyScore', direction: 'desc' }}
+            highlightCol="wonValue"
+            defaultSort={{ key: 'wonValue', direction: 'desc' }}
             unrankedNames={['(Unassigned)']}
             nameKey="name"
+            quoteFilter={salespersonFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('salespersonLeague', value)}
             onRowClick={(row) =>
               openQuotes(
                 { type: 'salesperson', value: row.name },
                 `Salesperson: ${row.name}`,
-                `${row.quotesCreated} quotes · ${formatCurrency(row.wonValue)} won`
+                `${row.quotesCreated} quotes · ${formatCurrency(row.wonValue)} won`,
+                salespersonFilter,
               )
             }
           />
           {!isBranch && (
             <LeagueTable
-              title="Branch league table"
-              subtitle="Nearly half of sales quote value has no branch assigned — tap a row"
+              title="Branch League Table"
+              subtitle="Nearly Half of Sales Quote Value Has No Branch Assigned — Tap a Row"
               columns={branchColumns}
               rows={branchLeague}
               highlightCol="valueShare"
               defaultSort={{ key: 'value', direction: 'desc' }}
+              quoteFilter={branchFilter}
+              onQuoteFilterChange={(value) => setWidgetFilter('branchLeague', value)}
               onRowClick={(row) =>
                 openQuotes(
                   { type: 'branch', value: row.branch },
                   `Branch: ${row.branch}`,
-                  `${row.quotes} quotes · ${row.expiredRate}% expired`
+                  `${row.quotes} quotes · ${row.expiredRate}% expired`,
+                  branchFilter,
                 )
               }
             />
           )}
           <LeagueTable
-            title="Top clients by quote value"
-            subtitle="Tap a row for client quote breakdown"
+            title="Top Clients by Quote Value"
+            subtitle="Tap a Row for Client Quote Breakdown"
             columns={clientColumns}
             rows={topClients}
             defaultSort={{ key: 'value', direction: 'desc' }}
+            quoteFilter={topClientsFilter}
+            onQuoteFilterChange={(value) => setWidgetFilter('topClients', value)}
             onRowClick={(row) =>
               openQuotes(
                 { type: 'client', value: row.client },
                 `Client: ${row.client}`,
-                `${row.quotes} quotes · ${formatCurrency(row.value)}`
+                `${row.quotes} quotes · ${formatCurrency(row.value)}`,
+                topClientsFilter,
               )
             }
           />
@@ -1130,7 +1318,7 @@ export function DashboardView({ view, leadSummary, isBranch }) {
       </Section>
 
       {!isBranch && (
-        <Section title="Data insights">
+        <Section title="Data Insights">
           <DataInsightsPanel summary={summary} />
         </Section>
       )}
