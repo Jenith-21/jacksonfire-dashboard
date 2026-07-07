@@ -180,7 +180,17 @@ function App() {
           <img src="/jackson-logo.jpg" alt="Jackson Fire & Security" className="error-logo" />
           <h1>Unable to load dashboard</h1>
           <p>{error}</p>
-          <p className="hint">Run both servers from the project root: <code>npm run dev</code></p>
+          <p className="hint">
+            {error.includes('Vercel') || error.includes('GOOGLE_SERVICE_ACCOUNT')
+              ? 'Check Vercel → Settings → Environment Variables, then redeploy.'
+              : error.includes('not shared') || error.includes('Spreadsheet ID')
+                ? 'Open Google Sheets → Share → add the service account email as Viewer.'
+                : 'Run both servers from the project root: '}
+            {!error.includes('Vercel') &&
+              !error.includes('GOOGLE_SERVICE_ACCOUNT') &&
+              !error.includes('not shared') &&
+              !error.includes('Spreadsheet ID') && <code>npm run dev</code>}
+          </p>
           <button type="button" onClick={() => { setShowLoader(true); loadData() }}>
             Retry
           </button>
